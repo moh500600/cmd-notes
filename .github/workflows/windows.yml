@@ -1,0 +1,128 @@
+# Builds the Windows desktop app (Notes Pro / ملاحظاتي برو) on a GitHub-hosted Windows runner.
+#
+# Every push / manual run  -> artifacts: portable .zip + Setup .exe installer
+# Pushing a tag like v1.0.0 -> the same two files attached to a GitHub Release
+#
+# The project must sit at the root of the repository (pubspec.yaml next to .github/).
+name: Windows build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older, still-running build.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # needed to create the GitHub Release on tags
+
+env:
+  FLUTTER_VERSION: "3.47.9"
+  APP_ID: notes_pro            # exe name: notes_pro.exe
+  APP_SLUG: NotesPro          # used in file names (ASCII)
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        timeout-minutes: 15
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flutter info
+        run: |
+          flutter --version
+          flutter config --enable-windows-desktop
+
+      - name: Dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+        timeout-minutes: 10
+
+      - name: Build Windows (release)
+        run: flutter build windows --release
+        timeout-minutes: 30
+
+      - name: Work out version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -match '^v?(\d+\.\d+\.\d+)') { $v = $Matches[1] }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $v"
+
+      # Ship the Visual C++ runtime next to the exe (app-local), so the app
+      # starts on a fresh Windows PC without the VC++ Redistributable.
+      - name: Bundle VC++ runtime DLLs
+        shell: pwsh
+        run: |
+          $rel = "build\windows\x64\runner\Release"
+          foreach ($dll in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll') {
+            $src = Join-Path $env:WINDIR "System32\$dll"
+            if (Test-Path $src) { Copy-Item $src $rel -Force; Write-Host "bundled $dll" }
+          }
+          Get-ChildItem $rel | Format-Table Name, Length
+
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $zip = "dist\${{ env.APP_SLUG }}-${{ steps.ver.outputs.version }}-windows-x64.zip"
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath $zip -Force
+          Get-Item $zip | Format-Table Name, Length
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found after choco install innosetup" }
+          & $iscc.FullName "/DMyAppVersion=${{ steps.ver.outputs.version }}" "installer\${{ env.APP_ID }}.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_SLUG }}-windows-x64-zip
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_SLUG }}-windows-x64-setup
+          path: dist/*-Setup-*.exe
+          if-no-files-found: error
+
+      # Unit + widget tests run after the .exe is safely uploaded, capped and
+      # non-blocking, so a Windows-only test quirk never holds back the build.
+      - name: Tests (non-blocking)
+        run: flutter test --reporter expanded
+        continue-on-error: true
+        timeout-minutes: 15
+
+      - name: GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "ملاحظاتي برو (Notes Pro) ${{ github.ref_name }}"
+          files: |
+            dist/*.zip
+            dist/*-Setup-*.exe

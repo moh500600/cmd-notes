@@ -1,0 +1,59 @@
+# Compiles the iPhone app (Notes Pro / ملاحظاتي برو) on a macOS runner, WITHOUT code signing.
+# The unsigned .ipa proves the code builds for iOS; installing it on a phone
+# needs an Apple Developer account to sign it.
+#
+# Runs only when started by hand (Actions → "iOS build (unsigned)" → Run workflow)
+# or on a v* tag, because macOS minutes are expensive on private repos.
+name: iOS build (unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "macOS runner (pick an Intel one when arm64 runners are out of capacity)"
+        type: choice
+        default: macos-15-intel
+        options: [macos-latest, macos-15-intel, macos-14, macos-15]
+  push:
+    tags: ["v*"]
+
+env:
+  FLUTTER_VERSION: "3.47.9"
+  APP_SLUG: NotesPro
+
+jobs:
+  ios:
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        timeout-minutes: 15
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Dependencies
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build iOS (release, no codesign)
+        run: flutter build ios --release --no-codesign
+        timeout-minutes: 40
+
+      - name: Package unsigned .ipa
+        run: |
+          mkdir -p dist/Payload
+          cp -R build/ios/iphoneos/Runner.app dist/Payload/
+          cd dist && zip -qry "${{ env.APP_SLUG }}-unsigned.ipa" Payload && rm -rf Payload
+          ls -la
+
+      - name: Upload unsigned .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_SLUG }}-ios-unsigned-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
