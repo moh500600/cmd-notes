@@ -21,7 +21,7 @@ Open the release page and pick **`cmd-notes-0.1.0-arm64-v8a.apk`** for most phon
 SHA-256 of the arm64-v8a file:
 
 ```
-5b2c31414cc47d4c8c3cefb5e1fbe5674d3ec6592963491d3845cc57ac60042d
+e42343d771ac9283a26c672067a8712ac000446ee94492fba339cd8f03787aa7
 ```
 
 Android will ask you to allow installing from an unknown source. The APK is signed with a new CMD key made for this app.
